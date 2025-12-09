@@ -1,0 +1,1 @@
+# Admin events endpoints (CRUD)
