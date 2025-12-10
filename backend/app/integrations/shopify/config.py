@@ -1,0 +1,1 @@
+# Shopify configuration and credentials
