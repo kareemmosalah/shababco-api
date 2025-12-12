@@ -4,6 +4,70 @@
 <a href="https://github.com/fastapi/full-stack-fastapi-template/actions?query=workflow%3A%22Test+Backend%22" target="_blank"><img src="https://github.com/fastapi/full-stack-fastapi-template/workflows/Test%20Backend/badge.svg" alt="Test Backend"></a>
 <a href="https://coverage-badge.samuelcolvin.workers.dev/redirect/fastapi/full-stack-fastapi-template" target="_blank"><img src="https://coverage-badge.samuelcolvin.workers.dev/fastapi/full-stack-fastapi-template.svg" alt="Coverage"></a>
 
+## Quick Start
+
+### Prerequisites
+
+- [Docker](https://www.docker.com/get-started) and Docker Compose installed
+- Git (to clone the repository)
+
+### Running the Project
+
+1. **Clone the repository** (if you haven't already):
+   ```bash
+   git clone <repository-url>
+   cd shababco-api
+   ```
+
+2. **Configure environment variables**:
+   - The project includes a `.env` file with default configurations
+   - For production, update these critical variables:
+     - `SECRET_KEY` - Generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+     - `FIRST_SUPERUSER_PASSWORD` - Set a secure admin password
+     - `POSTGRES_PASSWORD` - Set a secure database password
+
+3. **Start the application**:
+   ```bash
+   docker compose watch
+   ```
+
+4. **Access the application**:
+   - **Backend API**: http://localhost:8000
+   - **API Documentation (Swagger)**: http://localhost:8000/docs
+   - **API Documentation (ReDoc)**: http://localhost:8000/redoc
+   - **Database Admin (Adminer)**: http://localhost:8080
+   - **Traefik Dashboard**: http://localhost:8090
+   - **MailCatcher (Email Testing)**: http://localhost:1080
+
+5. **View logs** (optional):
+   ```bash
+   # All services
+   docker compose logs
+   
+   # Specific service
+   docker compose logs backend
+   ```
+
+6. **Stop the application**:
+   ```bash
+   docker compose down
+   ```
+
+### Alternative: Local Development Without Docker
+
+**Backend**:
+```bash
+cd backend
+# Install dependencies (requires Python 3.10+)
+pip install uv
+uv sync
+
+# Run the development server
+fastapi dev app/main.py
+```
+
+For more detailed development instructions, see [development.md](./development.md).
+
 ## Technology Stack and Features
 
 - ⚡ [**FastAPI**](https://fastapi.tiangolo.com) for the Python backend API.

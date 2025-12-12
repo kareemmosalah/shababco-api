@@ -3,8 +3,8 @@ Admin events endpoints (CRUD).
 Handles event management through Shopify integration.
 """
 import logging
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from typing import Optional, Annotated
+from fastapi import APIRouter, HTTPException, Query, status, Depends
 
 from app.schemas.event import EventCreate, ShababcoEvent, EventListResponse
 from app.integrations.shopify import (
@@ -15,6 +15,8 @@ from app.integrations.shopify import (
     ShopifyValidationError,
     ShopifyAPIError,
 )
+from app.api.deps import CurrentUser, get_current_active_superuser
+from app.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,7 @@ router = APIRouter(prefix="/events", tags=["Admin Events"])
 
 @router.get("", response_model=EventListResponse)
 async def get_events(
+    current_user: CurrentUser,
     limit: int = Query(default=50, ge=1, le=250, description="Number of events to return"),
     cursor: Optional[str] = Query(default=None, description="Pagination cursor"),
     product_type: str = Query(default="event", description="Filter by product type")
@@ -59,7 +62,7 @@ async def get_events(
 
 
 @router.get("/{product_id}", response_model=ShababcoEvent)
-async def get_event(product_id: str):
+async def get_event(current_user: CurrentUser, product_id: str):
     """
     Get a single event by Shopify product ID.
     
@@ -90,7 +93,10 @@ async def get_event(product_id: str):
 
 
 @router.post("", response_model=ShababcoEvent, status_code=status.HTTP_201_CREATED)
-async def create_event(event_data: EventCreate) -> ShababcoEvent:
+async def create_event(
+    event_data: EventCreate,
+    current_user: Annotated[User, Depends(get_current_active_superuser)]
+) -> ShababcoEvent:
     """
     Create a new event in Shopify.
     
