@@ -106,8 +106,20 @@ async def create_event(
         product = await create_product(
             title=event_data.title,
             description=event_data.description,
+            subtitle=event_data.subtitle,
+            category=event_data.category,
+            tags=event_data.tags,
+            cover_image=event_data.cover_image,
+            gallery_images=event_data.gallery_images,
+            venue_name=event_data.venue_name,
             city=event_data.city,
+            address=event_data.address,
+            country=event_data.country,
+            location_link=event_data.location_link,
             start_datetime=event_data.start_datetime,
+            end_datetime=event_data.end_datetime,
+            organizer_name=event_data.organizer_name,
+            seo_slug=event_data.seo_slug,
             status=event_data.status
         )
         return ShababcoEvent(**product)
