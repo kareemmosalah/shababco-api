@@ -68,7 +68,7 @@ class ShababcoEvent(BaseModel):
     title: str = Field(..., description="Event title")
     subtitle: Optional[str] = Field(None, description="Event subtitle/tagline")
     description: Optional[str] = Field(None, description="Event description")
-    category: Optional[EventCategory] = Field(None, description="Event category")
+    category: Optional[str] = Field(None, description="Event category")  # String to handle legacy data
     tags: Optional[list[str]] = Field(default=None, description="Event tags")
     cover_image: Optional[str] = Field(None, description="Cover image URL")
     gallery_images: Optional[list[str]] = Field(default=None, description="Gallery image URLs")
