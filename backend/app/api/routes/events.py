@@ -6,7 +6,7 @@ import logging
 from typing import Optional, Annotated
 from fastapi import APIRouter, HTTPException, Query, status, Depends
 
-from app.schemas.event import EventCreate, ShababcoEvent, EventListResponse
+from app.schemas.event import EventCreate, ShababcoEvent, EventListResponse, CATEGORY_LABELS, STATUS_LABELS
 from app.integrations.shopify import (
     fetch_product,
     list_products,
@@ -23,26 +23,85 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["Admin Events"])
 
 
+@router.get("/metadata")
+async def get_event_metadata():
+    """
+    Get event metadata including category and status labels.
+    
+    Returns mappings for categories and statuses to use in frontend dropdowns and displays.
+    """
+    return {
+        "categories": [
+            {"key": key, "label": label}
+            for key, label in CATEGORY_LABELS.items()
+        ],
+        "statuses": [
+            {"key": key, "label": label}
+            for key, label in STATUS_LABELS.items()
+        ]
+    }
+
 @router.get("", response_model=EventListResponse)
 async def get_events(
     current_user: CurrentUser,
-    limit: int = Query(default=50, ge=1, le=250, description="Number of events to return"),
-    cursor: Optional[str] = Query(default=None, description="Pagination cursor"),
-    product_type: str = Query(default="event", description="Filter by product type")
+    limit: int = Query(default=20, ge=1, le=50, description="Number of events to return per page (max 50)"),
+    cursor: Optional[str] = Query(default=None, description="Pagination cursor for next page"),
+    search: Optional[str] = Query(default=None, description="Search events by title, subtitle, description, and tags"),
+    category: Optional[str] = Query(default=None, description="Filter by category"),
+    status: Optional[str] = Query(default=None, description="Filter by status (active, draft, archived)")
 ):
     """
-    List all events from Shopify.
+    List events with pagination, search, and filters.
     
-    Fetches products with product_type='event' and returns them as ShababcoEvent objects.
+    - **limit**: Number of events per page (default: 20, max: 50)
+    - **cursor**: Pagination cursor from previous response
+    - **search**: Multi-field search (title, subtitle, description, tags)
+    - **category**: Filter by event category
+    - **status**: Filter by status (active, draft, archived)
     """
     try:
         # Build Shopify query filter
-        query = f"product_type:{product_type}"
+        query_parts = ["product_type:event"]
+        
+        # Enhanced multi-field search
+        if search:
+            # Clean and prepare search term
+            search_term = search.strip()
+            
+            # Build multi-field search query
+            # Shopify syntax: (field1:term OR field2:term OR field3:term)
+            # This searches across title, body (description), and tags
+            search_fields = [
+                f"title:*{search_term}*",           # Search in title
+                f"body:*{search_term}*",            # Search in description (HTML content)
+                f"tag:*{search_term}*",             # Search in tags
+            ]
+            
+            # Combine with OR operator for broader results
+            search_query = f"({' OR '.join(search_fields)})"
+            query_parts.append(search_query)
+        
+        # Add status filter
+        if status:
+            # Map our status values to Shopify status values
+            status_upper = status.upper()
+            if status_upper in ["ACTIVE", "DRAFT", "ARCHIVED"]:
+                query_parts.append(f"status:{status_upper}")
+        
+        # Note: Category filtering will be done post-fetch since it's stored in metafields
+        # Shopify doesn't support filtering by metafields in the query
+        
+        query = " AND ".join(query_parts)
         
         result = await list_products(limit=limit, query=query, cursor=cursor)
         
+        # Filter by category if specified (post-processing)
+        events = result["products"]
+        if category:
+            events = [e for e in events if e.get("category") == category]
+        
         return EventListResponse(
-            events=result["products"],
+            events=events,
             has_next_page=result["has_next_page"],
             end_cursor=result["end_cursor"]
         )

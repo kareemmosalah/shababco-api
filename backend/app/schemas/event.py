@@ -8,16 +8,38 @@ from pydantic import BaseModel, Field
 
 
 class EventCategory(str, Enum):
-    """Event category options."""
-    MUSIC_CONCERTS = "Music & Concerts"
-    NIGHTLIFE_PARTIES = "Nightlife & Parties"
-    ART_CULTURE = "Art & Culture"
-    COMEDY_SHOWS = "Comedy & Shows"
-    SPORTS_FITNESS = "Sports & Fitness"
-    FESTIVALS_FAIRS = "Festivals & Fairs"
-    WORKSHOPS_EXPERIENCES = "Workshops & Experiences"
-    ENTERTAINMENT_LIFESTYLE = "Entertainment & Lifestyle"
-    FAMILY_KIDS = "Family & Kids"
+    """Event category keys (use CATEGORY_LABELS for display)."""
+    MUSIC_CONCERTS = "music_concerts"
+    NIGHTLIFE_PARTIES = "nightlife_parties"
+    ART_CULTURE = "art_culture"
+    COMEDY_SHOWS = "comedy_shows"
+    SPORTS_FITNESS = "sports_fitness"
+    FESTIVALS_FAIRS = "festivals_fairs"
+    WORKSHOPS_EXPERIENCES = "workshops_experiences"
+    ENTERTAINMENT_LIFESTYLE = "entertainment_lifestyle"
+    FAMILY_KIDS = "family_kids"
+
+
+# Category display labels for frontend
+CATEGORY_LABELS = {
+    "music_concerts": "Music & Concerts",
+    "nightlife_parties": "Nightlife & Parties",
+    "art_culture": "Art & Culture",
+    "comedy_shows": "Comedy & Shows",
+    "sports_fitness": "Sports & Fitness",
+    "festivals_fairs": "Festivals & Fairs",
+    "workshops_experiences": "Workshops & Experiences",
+    "entertainment_lifestyle": "Entertainment & Lifestyle",
+    "family_kids": "Family & Kids",
+}
+
+
+# Status display labels for frontend
+STATUS_LABELS = {
+    "active": "Published",
+    "draft": "Draft",
+    "archived": "Archived",
+}
 
 
 class EventBase(BaseModel):
@@ -28,7 +50,7 @@ class EventBase(BaseModel):
     description: Optional[str] = Field(None, description="Event description (HTML supported)")
     category: Optional[EventCategory] = Field(
         None, 
-        description="Event category. Options: Music & Concerts, Nightlife & Parties, Art & Culture, Comedy & Shows, Sports & Fitness, Festivals & Fairs, Workshops & Experiences, Entertainment & Lifestyle, Family & Kids"
+        description="Event category key (e.g., 'music_concerts', 'nightlife_parties')"
     )
     tags: Optional[list[str]] = Field(default=None, description="Event tags")
     cover_image: Optional[str] = Field(None, description="Cover image URL")
@@ -63,6 +85,7 @@ class ShababcoEvent(BaseModel):
     Event response schema matching the enhanced event structure.
     """
     shopify_product_id: str = Field(..., description="Shopify product ID")
+    product_type: str = Field(default="event", description="Product type (always 'event' for events)")
     
     # Event Information
     title: str = Field(..., description="Event title")
@@ -96,10 +119,11 @@ class ShababcoEvent(BaseModel):
         json_schema_extra = {
             "example": {
                 "shopify_product_id": "8234567890123",
+                "product_type": "event",
                 "title": "Cairo Youth Culture Festival 2025",
                 "subtitle": "Discover street culture, fashion, and live shows",
                 "description": "<p>A fantastic festival for youth culture enthusiasts.</p>",
-                "category": "Music & Concerts",
+                "category": "music_concerts",
                 "tags": ["festival", "youth", "culture", "cairo"],
                 "cover_image": "https://example.com/cover.jpg",
                 "gallery_images": ["https://example.com/gallery1.jpg", "https://example.com/gallery2.jpg"],

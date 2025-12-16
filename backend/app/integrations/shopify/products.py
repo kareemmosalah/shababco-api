@@ -178,6 +178,7 @@ def _format_product_response(product_data: Dict[str, Any]) -> Dict[str, Any]:
     
     return {
         "shopify_product_id": product_data.get("legacyResourceId"),
+        "product_type": product_data.get("productType", "event"),  # Default to "event"
         # Event Information
         "title": product_data.get("title"),
         "subtitle": metafields.get("subtitle"),
