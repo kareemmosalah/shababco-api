@@ -7,6 +7,7 @@ from typing import Optional, Annotated
 from fastapi import APIRouter, HTTPException, Query, status, Depends
 
 from app.schemas.event import EventCreate, ShababcoEvent, EventListResponse, CATEGORY_LABELS, STATUS_LABELS
+from app.schemas.event_update import EventUpdate
 from app.integrations.shopify import (
     fetch_product,
     list_products,
@@ -195,6 +196,180 @@ async def create_event(
         )
     except Exception as e:
         logger.error(f"Unexpected error while creating event: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
+
+
+@router.delete(
+    "/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(get_current_active_superuser)],
+)
+async def delete_event(
+    product_id: str,
+) -> None:
+    """
+    Delete an event (Shopify product) and all its tickets (variants).
+    
+    - **product_id**: Shopify product ID
+    
+    This will permanently delete the event and all associated tickets.
+    """
+    from app.integrations.shopify.products import delete_product
+    
+    try:
+        # Delete the product (and all its variants)
+        await delete_product(product_id)
+        logger.info(f"Deleted event {product_id}")
+        
+    except ShopifyNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Event with ID {product_id} not found"
+        )
+    except ShopifyAPIError as e:
+        logger.error(f"Shopify API error while deleting event: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete event in Shopify: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error while deleting event: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
+
+
+@router.patch(
+    "/{product_id}",
+    response_model=ShababcoEvent,
+    dependencies=[Depends(get_current_active_superuser)],
+)
+async def update_event(
+    product_id: str,
+    event_data: EventUpdate,
+) -> ShababcoEvent:
+    """
+    Update an event with partial data.
+    Only provided fields will be updated.
+    
+    - **product_id**: Shopify product ID
+    """
+    from app.integrations.shopify.products import update_product
+    
+    try:
+        # Convert Pydantic model to dict, excluding None values
+        update_dict = event_data.model_dump(exclude_none=True)
+        
+        # Update the product
+        updated_product = await update_product(product_id, update_dict)
+        
+        logger.info(f"Updated event {product_id}")
+        return ShababcoEvent(**updated_product)
+        
+    except ShopifyNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Event with ID {product_id} not found"
+        )
+    except ShopifyAPIError as e:
+        logger.error(f"Shopify API error while updating event: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update event: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error while updating event: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
+
+
+@router.patch(
+    "/{product_id}/publish",
+    response_model=ShababcoEvent,
+    dependencies=[Depends(get_current_active_superuser)],
+)
+async def publish_event(
+    product_id: str,
+) -> ShababcoEvent:
+    """
+    Publish an event by changing its status to 'active'.
+    
+    Validates that:
+    - Event exists
+    - Event has at least one ticket
+    - At least one ticket has inventory > 0
+    
+    - **product_id**: Shopify product ID
+    """
+    from app.integrations.shopify.products import update_product_status
+    from app.integrations.shopify.variants import list_variants
+    
+    try:
+        # 1. Validate event exists
+        try:
+            event = await fetch_product(product_id)
+        except ShopifyNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event with ID {product_id} not found"
+            )
+        
+        # 2. Get all tickets for the event
+        try:
+            variants = await list_variants(product_id)
+        except ShopifyAPIError as e:
+            logger.error(f"Failed to fetch tickets for validation: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to validate event tickets"
+            )
+        
+        # 3. Validate at least one ticket exists
+        if not variants or len(variants) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot publish event: Event must have at least one ticket"
+            )
+        
+        # 4. Validate at least one ticket has inventory
+        has_inventory = any(v.get("available", 0) > 0 for v in variants)
+        if not has_inventory:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot publish event: At least one ticket must have available inventory"
+            )
+        
+        # 5. Update status to active
+        try:
+            await update_product_status(product_id, "active")
+        except ShopifyAPIError as e:
+            logger.error(f"Failed to update product status: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to publish event: {str(e)}"
+            )
+        
+        # 6. Fetch and return updated event
+        updated_event = await fetch_product(product_id)
+        logger.info(f"Successfully published event {product_id}")
+        return ShababcoEvent(**updated_event)
+        
+    except HTTPException:
+        raise
+    except ShopifyAPIError as e:
+        logger.error(f"Shopify API error while publishing event: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to publish event: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error while publishing event: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred"

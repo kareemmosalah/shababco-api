@@ -2,6 +2,7 @@
 Shopify product operations.
 Handles fetching and creating products with metafields.
 """
+import json
 import logging
 from typing import Dict, Any, List, Optional
 
@@ -477,3 +478,242 @@ async def create_product(
     except Exception as e:
         logger.error(f"Error creating product: {str(e)}")
         raise
+
+
+async def delete_product(product_id: str) -> bool:
+    """
+    Delete a Shopify product.
+    
+    Args:
+        product_id: Shopify product ID (legacy format)
+        
+    Returns:
+        True if deletion successful
+        
+    Raises:
+        ShopifyAPIError: If deletion fails
+    """
+    from .exceptions import ShopifyAPIError
+    
+    # Convert legacy ID to GraphQL ID
+    graphql_product_id = f"gid://shopify/Product/{product_id}"
+    
+    # GraphQL mutation to delete product
+    mutation = """
+    mutation deleteProduct($id: ID!) {
+      productDelete(input: {id: $id}) {
+        deletedProductId
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    
+    variables = {"id": graphql_product_id}
+    
+    result = await shopify_admin_client.execute_mutation(mutation, variables)
+    
+    # Check for errors
+    if result.get("productDelete", {}).get("userErrors"):
+        errors = result["productDelete"]["userErrors"]
+        if errors:
+            error_messages = [f"{err.get('field', 'unknown')}: {err.get('message', 'unknown error')}" for err in errors]
+            raise ShopifyAPIError(f"Failed to delete product: {', '.join(error_messages)}")
+    
+    deleted_id = result.get("productDelete", {}).get("deletedProductId")
+    
+    if deleted_id:
+        logger.info(f"Successfully deleted product {product_id}")
+        return True
+    else:
+        raise ShopifyAPIError(f"Failed to delete product {product_id}")
+
+
+async def update_product_status(product_id: str, status: str) -> Dict[str, Any]:
+    """
+    Update a Shopify product's status.
+    
+    Args:
+        product_id: Shopify product ID (legacy format)
+        status: New status (draft, active, archived)
+        
+    Returns:
+        Updated product data
+        
+    Raises:
+        ShopifyAPIError: If update fails
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Convert legacy ID to GraphQL ID
+    graphql_product_id = f"gid://shopify/Product/{product_id}"
+    
+    # GraphQL mutation to update product status
+    mutation = """
+    mutation updateProductStatus($id: ID!, $status: ProductStatus!) {
+      productUpdate(input: {id: $id, status: $status}) {
+        product {
+          id
+          legacyResourceId
+          status
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    
+    variables = {
+        "id": graphql_product_id,
+        "status": status.upper()
+    }
+    
+    result = await shopify_admin_client.execute_mutation(mutation, variables)
+    
+    # Check for errors
+    if result.get("productUpdate", {}).get("userErrors"):
+        errors = result["productUpdate"]["userErrors"]
+        if errors:
+            error_messages = [f"{err.get('field', 'unknown')}: {err.get('message', 'unknown error')}" for err in errors]
+            raise ShopifyAPIError(f"Failed to update product status: {', '.join(error_messages)}")
+    
+    product = result.get("productUpdate", {}).get("product")
+    
+    if product:
+        logger.info(f"Successfully updated product {product_id} status to {status}")
+        return product
+    else:
+        raise ShopifyAPIError(f"Failed to update product {product_id} status")
+
+
+async def update_product(product_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Update a Shopify product with partial data.
+    Only provided fields will be updated.
+    
+    Args:
+        product_id: Shopify product ID (legacy format)
+        update_data: Dictionary of fields to update
+        
+    Returns:
+        Updated product data
+        
+    Raises:
+        ShopifyAPIError: If update fails
+    """
+    from .exceptions import ShopifyAPIError
+    
+    # Convert legacy ID to GraphQL ID
+    graphql_product_id = f"gid://shopify/Product/{product_id}"
+    
+    # Build product input with only provided fields
+    product_input = {"id": graphql_product_id}
+    
+    # Map update_data fields to Shopify fields
+    if "title" in update_data and update_data["title"] is not None:
+        product_input["title"] = update_data["title"]
+    
+    if "description" in update_data and update_data["description"] is not None:
+        product_input["descriptionHtml"] = update_data["description"]
+    
+    if "tags" in update_data and update_data["tags"] is not None:
+        product_input["tags"] = update_data["tags"]
+    
+    if "seo_slug" in update_data and update_data["seo_slug"] is not None:
+        product_input["handle"] = update_data["seo_slug"]
+    
+    if "status" in update_data and update_data["status"] is not None:
+        product_input["status"] = update_data["status"].upper()
+    
+    # Handle metafields separately if needed
+    metafields_to_update = []
+    metafield_keys = ["subtitle", "category", "cover_image", "gallery_images", "venue_name", 
+                      "city", "address", "country", "location_link", "start_datetime", 
+                      "end_datetime", "organizer_name"]
+    
+    for key in metafield_keys:
+        if key in update_data and update_data[key] is not None:
+            metafield_type = "single_line_text_field"
+            value = update_data[key]
+            
+            if key == "gallery_images":
+                metafield_type = "json"
+                value = json.dumps(value) if isinstance(value, list) else value
+            
+            metafields_to_update.append({
+                "ownerId": graphql_product_id,
+                "namespace": "event",
+                "key": key,
+                "type": metafield_type,
+                "value": str(value)
+            })
+    
+    # GraphQL mutation to update product
+    mutation = """
+    mutation productUpdate($input: ProductInput!) {
+      productUpdate(input: $input) {
+        product {
+          id
+          legacyResourceId
+          title
+          descriptionHtml
+          status
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    
+    variables = {"input": product_input}
+    
+    result = await shopify_admin_client.execute_mutation(mutation, variables)
+    
+    # Check for errors
+    if result.get("productUpdate", {}).get("userErrors"):
+        errors = result["productUpdate"]["userErrors"]
+        if errors:
+            error_messages = [f"{err.get('field', 'unknown')}: {err.get('message', 'unknown error')}" for err in errors]
+            raise ShopifyAPIError(f"Failed to update product: {', '.join(error_messages)}")
+    
+    # Update metafields if any
+    if metafields_to_update:
+        metafields_mutation = """
+        mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) {
+            metafields {
+              id
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+        """
+        
+        metafields_result = await shopify_admin_client.execute_mutation(
+            metafields_mutation, 
+            {"metafields": metafields_to_update}
+        )
+        
+        if metafields_result.get("metafieldsSet", {}).get("userErrors"):
+            errors = metafields_result["metafieldsSet"]["userErrors"]
+            if errors:
+                logger.warning(f"Some metafields failed to update: {errors}")
+    
+    product = result.get("productUpdate", {}).get("product")
+    
+    if product:
+        logger.info(f"Successfully updated product {product_id}")
+        # Fetch full product data to return
+        return await fetch_product(product_id)
+    else:
+        raise ShopifyAPIError(f"Failed to update product {product_id}")

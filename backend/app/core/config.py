@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     SHOPIFY_ADMIN_API_TOKEN: str = ""
     SHOPIFY_API_VERSION: str = "2025-01"
     SHOPIFY_WEBHOOK_SECRET: str = ""
+    SHOPIFY_LOCATION_ID: str = ""  # Shopify location ID for inventory management
     
     @computed_field  # type: ignore[prop-decorator]
     @property
