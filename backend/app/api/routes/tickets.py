@@ -90,23 +90,64 @@ async def delete_ticket(
     variant_id: str,
 ) -> None:
     """
-    Delete a ticket (Shopify variant).
+    Delete a ticket (variant).
+    
+    Deletion rules:
+    - If ticket has NO sales: Can delete
+    - If ticket has sales: CANNOT delete (must hide instead)
     
     - **product_id**: Shopify product ID
-    - **variant_id**: Shopify variant ID to delete
+    - **variant_id**: Shopify variant ID
     """
-    from app.integrations.shopify.variants import delete_variant
+    from app.integrations.shopify.variants import delete_variant, get_variant
     
     try:
+        # Validate product exists
+        try:
+            product = await fetch_product(product_id)
+        except ShopifyNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event with ID {product_id} not found"
+            )
+        
+        # Get ticket to check sales
+        try:
+            ticket = await get_variant(variant_id)
+        except ShopifyNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found"
+            )
+        
+        sold_count = ticket.get('sold', 0)
+        
+        # Prevent deletion if ticket has sales
+        if sold_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot delete ticket with {sold_count} sales. "
+                       f"Hide it instead by setting visibility to false."
+            )
+        
         # Delete the variant
         await delete_variant(product_id, variant_id)
-        logger.info(f"Deleted ticket variant {variant_id} from product {product_id}")
         
+        logger.info(f"Deleted ticket {variant_id} from product {product_id}")
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (including validation errors)
+        raise
+    except ShopifyNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ticket not found"
+        )
     except ShopifyAPIError as e:
         logger.error(f"Shopify API error while deleting ticket: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete ticket in Shopify: {str(e)}"
+            detail=f"Failed to delete ticket: {str(e)}"
         )
     except Exception as e:
         logger.error(f"Unexpected error while deleting ticket: {str(e)}")
@@ -128,12 +169,18 @@ async def update_ticket(
 ) -> TicketResponse:
     """
     Update a ticket with partial data.
-    Only provided fields will be updated.
+    
+    Field locking rules:
+    - If ticket has NO sales: All fields editable
+    - If ticket has sales: Only price, inventory (increase), and visibility editable
+    
+    Locked fields after sales:
+    - ticket_name, ticket_type, description, features, compare_at_price, max_per_order
     
     - **product_id**: Shopify product ID
     - **variant_id**: Shopify variant ID
     """
-    from app.integrations.shopify.variants import update_variant
+    from app.integrations.shopify.variants import update_variant, get_variant
     
     try:
         # Validate product exists
@@ -145,15 +192,72 @@ async def update_ticket(
                 detail=f"Event with ID {product_id} not found"
             )
         
+        # Get current ticket to check sales
+        try:
+            current_ticket = await get_variant(variant_id)
+        except ShopifyNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found"
+            )
+        
+        sold_count = current_ticket.get('sold', 0)
+        has_sales = sold_count > 0
+        
         # Convert Pydantic model to dict, excluding None values
         update_dict = ticket_data.model_dump(exclude_none=True)
+        
+        # Validate field locking if ticket has sales
+        if has_sales:
+            # Define locked fields (cannot be changed after sales)
+            locked_fields = {
+                'ticket_name': 'Ticket name',
+                'ticket_type': 'Ticket type',
+                'description': 'Description',
+                'features': 'Features',
+                'compare_at_price': 'Compare-at price',
+                'max_per_order': 'Max per order'
+            }
+            
+            # Check if trying to edit locked fields
+            for field, display_name in locked_fields.items():
+                if field in update_dict:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Cannot edit {display_name} after sales. "
+                               f"This ticket has {sold_count} confirmed buyers. "
+                               f"Create a new ticket instead."
+                    )
+            
+            # Validate inventory changes
+            if 'inventory_quantity' in update_dict:
+                new_inventory = update_dict['inventory_quantity']
+                if new_inventory < sold_count:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Cannot set inventory below sold count. "
+                               f"Sold: {sold_count}, Attempted: {new_inventory}"
+                    )
         
         # Update the variant
         updated_variant = await update_variant(product_id, variant_id, update_dict)
         
-        logger.info(f"Updated ticket {variant_id} for product {product_id}")
+        # Invalidate caches so UI shows updated data immediately
+        from app.core.cache import invalidate_event_caches, invalidate_ticket_caches
+        invalidate_event_caches(product_id)
+        invalidate_ticket_caches(event_id=product_id)
+        
+        logger.info(f"Updated ticket {variant_id} and invalidated caches")
         return TicketResponse(**updated_variant)
         
+    except HTTPException:
+        # Re-raise HTTP exceptions (including validation errors)
+        raise
+    except ShopifyNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ticket not found"
+        )
     except ShopifyAPIError as e:
         logger.error(f"Shopify API error while updating ticket: {str(e)}")
         raise HTTPException(
@@ -193,8 +297,17 @@ async def get_tickets_view(
     """
     from app.integrations.shopify.variants import list_variants
     from app.schemas.ticket import TicketListItem
+    from app.core.cache import get_cached_event_tickets, cache_event_tickets
     
     try:
+        # Check cache first
+        cached_tickets = get_cached_event_tickets(product_id)
+        if cached_tickets:
+            logger.info(f"✅ Cache HIT for tickets of event {product_id}")
+            return [TicketListItem(**ticket) for ticket in cached_tickets]
+        
+        logger.info(f"⚠️ Cache MISS for tickets of event {product_id}")
+        
         # Validate product exists
         try:
             product = await fetch_product(product_id)
@@ -204,8 +317,12 @@ async def get_tickets_view(
                 detail=f"Event with ID {product_id} not found"
             )
         
-        # Get all variants
+        # Get all variants from Shopify
         variants = await list_variants(product_id)
+        
+        # Cache tickets for 10 minutes
+        cache_event_tickets(product_id, variants, ttl=600)
+        logger.info(f"💾 Cached {len(variants)} tickets for event {product_id}")
         
         # Convert to TicketListItem
         tickets = [TicketListItem(**variant) for variant in variants]

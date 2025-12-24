@@ -3,8 +3,10 @@ Shopify variant operations for ticket management.
 Variants represent ticket types with pricing and inventory.
 """
 import json
+import os
 from typing import Dict, Any, Optional
 from app.integrations.shopify.admin_client import shopify_admin_client
+from app.core.config import settings
 
 
 # GraphQL mutation to create product variants (bulk API)
@@ -325,13 +327,20 @@ async def create_variant(
     # Build metafields
     metafields = _build_variant_metafields(ticket_data)
     
+    # Get default location for inventory
+    location_id = await get_default_location()
+
     # Build variant input
     variant_input = {
         "optionValues": [{"optionName": "Title", "name": ticket_name}],
         "price": str(price),
-        "inventoryPolicy": "DENY",
+        "inventoryQuantities": {
+            "availableQuantity": inventory_quantity,
+            "locationId": location_id
+        },
         "inventoryItem": {
-            "tracked": True
+            "tracked": True,  # Enable inventory tracking
+            "requiresShipping": False  # Digital tickets don't need shipping
         },
         "metafields": metafields
     }
@@ -558,19 +567,98 @@ async def update_variant(product_id: str, variant_id: str, update_data: Dict[str
             if errors:
                 logger.warning(f"Some metafields failed to update: {errors}")
     
-    # Handle inventory update if provided
+    # Handle inventory_quantity (capacity) update with delta calculation
     if "inventory_quantity" in update_data and update_data["inventory_quantity"] is not None:
-        # Get variant data to find inventory item ID
-        logger.info(f"Inventory quantity update requested: {update_data['inventory_quantity']}")
-        # TODO: Implement inventory update via set_inventory_quantity if needed
+        new_capacity = update_data["inventory_quantity"]
+        
+        # Get current capacity from metafield
+        current_capacity = None
+        for mf_edge in variant_data.get("metafields", {}).get("edges", []):
+            if mf_edge["node"]["key"] == "inventory_quantity":
+                current_capacity = int(mf_edge["node"]["value"])
+                break
+        
+        if current_capacity is None:
+            # No metafield exists, use current Shopify inventory as baseline
+            current_capacity = variant_data.get("inventoryQuantity", 0)
+            logger.info(f"No capacity metafield found, using current inventory: {current_capacity}")
+        
+        # Calculate delta (how much to add/remove from Shopify inventory)
+        delta = new_capacity - current_capacity
+        
+        if delta != 0:
+            logger.info(f"Capacity change detected: {current_capacity} → {new_capacity} (delta: {delta})")
+            
+            # Get inventory item ID
+            query = """
+            query getInventoryItem($id: ID!) {
+              productVariant(id: $id) {
+                inventoryItem {
+                  id
+                }
+              }
+            }
+            """
+            inv_result = await shopify_admin_client.execute_query(query, {"id": graphql_variant_id})
+            inventory_item_id = inv_result.get("productVariant", {}).get("inventoryItem", {}).get("id")
+            
+            if inventory_item_id:
+                location_id = settings.SHOPIFY_LOCATION_ID
+                if location_id:
+                    # Adjust Shopify inventory by delta
+                    adjust_mutation = """
+                    mutation adjustInventory($inventoryItemId: ID!, $locationId: ID!, $delta: Int!) {
+                      inventoryAdjustQuantities(input: {
+                        reason: "correction"
+                        name: "available"
+                        changes: [{
+                          inventoryItemId: $inventoryItemId
+                          locationId: $locationId
+                          delta: $delta
+                        }]
+                      }) {
+                        inventoryAdjustmentGroup {
+                          reason
+                        }
+                        userErrors {
+                          field
+                          message
+                        }
+                      }
+                    }
+                    """
+                    
+                    adjust_result = await shopify_admin_client.execute_mutation(
+                        adjust_mutation,
+                        {
+                            "inventoryItemId": inventory_item_id,
+                            "locationId": location_id,
+                            "delta": delta
+                        }
+                    )
+                    
+                    if adjust_result.get("inventoryAdjustQuantities", {}).get("userErrors"):
+                        errors = adjust_result["inventoryAdjustQuantities"]["userErrors"]
+                        logger.error(f"Failed to adjust inventory by {delta}: {errors}")
+                        raise ShopifyAPIError(f"Failed to adjust inventory: {errors}")
+                    else:
+                        logger.info(f"✅ Successfully adjusted Shopify inventory by {delta}")
+                else:
+                    logger.warning("SHOPIFY_LOCATION_ID not set, cannot adjust inventory")
+                    raise ShopifyAPIError("SHOPIFY_LOCATION_ID not configured")
+            else:
+                logger.error("Could not find inventory_item_id")
+                raise ShopifyAPIError("Could not find inventory item")
+        else:
+            logger.info(f"Capacity unchanged at {new_capacity}, no inventory adjustment needed")
     
     # Return formatted variant response
     if variant_data:
         logger.info(f"Successfully updated variant {variant_id}")
-        # Format the response - variant_data already has the structure we need
         return _format_variant_response(variant_data)
     else:
         raise ShopifyAPIError(f"Failed to update variant {variant_id}")
+
 
 
 async def delete_variant(product_id: str, variant_id: str) -> bool:
@@ -631,6 +719,68 @@ async def delete_variant(product_id: str, variant_id: str) -> bool:
         return True
     else:
         raise ShopifyAPIError(f"Failed to delete variant {variant_id}")
+
+
+async def get_variant(variant_id: str) -> Dict[str, Any]:
+    """
+    Get a single variant (ticket) by ID.
+    
+    Args:
+        variant_id: Shopify variant ID (can be numeric or GraphQL format)
+    
+    Returns:
+        Dict containing variant data with sold count
+    
+    Raises:
+        ShopifyNotFoundError: If variant not found
+        ShopifyAPIError: If API call fails
+    """
+    from app.integrations.shopify.exceptions import ShopifyNotFoundError, ShopifyAPIError
+    
+    # Convert to GraphQL ID if needed
+    if not variant_id.startswith("gid://"):
+        graphql_variant_id = f"gid://shopify/ProductVariant/{variant_id}"
+    else:
+        graphql_variant_id = variant_id
+    
+    query = """
+    query getVariant($id: ID!) {
+      productVariant(id: $id) {
+        id
+        legacyResourceId
+        title
+        price
+        compareAtPrice
+        inventoryQuantity
+        product {
+          id
+          legacyResourceId
+        }
+        metafields(first: 20, namespace: "ticket") {
+          edges {
+            node {
+              key
+              value
+              type
+            }
+          }
+        }
+      }
+    }
+    """
+    
+    variables = {"id": graphql_variant_id}
+    
+    result = await shopify_admin_client.execute_query(query, variables)
+    
+    variant_data = result.get("productVariant")
+    if not variant_data:
+        raise ShopifyNotFoundError(f"Variant {variant_id} not found")
+    
+    # Format response similar to list_variants
+    formatted = _format_variant_response(variant_data)
+    
+    return formatted
 
 
 async def list_variants(product_id: str) -> list[Dict[str, Any]]:
@@ -727,15 +877,24 @@ async def list_variants(product_id: str) -> list[Dict[str, Any]]:
         price = float(variant["price"])
         revenue = sold * price
         
+        # Parse ticket_type - handle "TicketType.REGULAR" format
+        ticket_type_raw = parsed_metafields.get("ticket_type", "regular")
+        if isinstance(ticket_type_raw, str) and "." in ticket_type_raw:
+            # Extract value from "TicketType.REGULAR" -> "regular"
+            ticket_type = ticket_type_raw.split(".")[-1].lower()
+        else:
+            ticket_type = ticket_type_raw
+        
         variant_data = {
             "shopify_variant_id": variant["legacyResourceId"],
             "ticket_name": variant["title"],
-            "ticket_type": parsed_metafields.get("ticket_type", "regular"),
+            "ticket_type": ticket_type,
             "price": price,
             "capacity": capacity,
             "sold": sold,
             "revenue": revenue,
             "available": available,
+            "is_visible": is_visible,  # Add is_visible field
             "status": status,
         }
         
@@ -795,8 +954,21 @@ def _format_variant_response(variant_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     metafields = _parse_variant_metafields(variant_data.get("metafields", {}))
     
-    # Calculate sold count and available quantity
-    inventory_quantity = variant_data.get("inventoryQuantity", 0)
+    # Get current available inventory
+    available = variant_data.get("inventoryQuantity", 0)
+    
+    # Get capacity from metafield (ensure it's an integer)
+    capacity_raw = metafields.get("inventory_quantity", 0)
+    try:
+        capacity = int(capacity_raw) if capacity_raw else 0
+    except (ValueError, TypeError):
+        capacity = 0
+    
+    if capacity == 0:
+        capacity = available
+    
+    # Calculate sold count
+    sold_count = max(0, capacity - available)
     
     return {
         "shopify_variant_id": variant_data.get("legacyResourceId"),
@@ -807,8 +979,8 @@ def _format_variant_response(variant_data: Dict[str, Any]) -> Dict[str, Any]:
         "is_visible": metafields.get("is_visible", True),
         "price": float(variant_data.get("price", 0)),
         "compare_at_price": float(variant_data.get("compareAtPrice")) if variant_data.get("compareAtPrice") else None,
-        "inventory_quantity": inventory_quantity,
+        "inventory_quantity": capacity,
         "max_per_order": metafields.get("max_per_order", 10),
-        "sold_count": 0,  # TODO: Calculate from orders
-        "available_quantity": inventory_quantity
+        "sold_count": sold_count,
+        "available_quantity": available
     }

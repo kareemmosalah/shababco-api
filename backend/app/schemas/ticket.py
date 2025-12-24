@@ -84,29 +84,28 @@ class TicketResponse(TicketBase):
 
 
 class TicketListItem(BaseModel):
-    """
-    Ticket list item for displaying in tickets table.
-    Simplified view with key information for UI display.
-    """
-    shopify_variant_id: str = Field(description="Shopify variant ID")
-    ticket_name: str = Field(description="Ticket name/title")
-    ticket_type: TicketType = Field(description="Type of ticket")
-    price: float = Field(description="Ticket price")
-    capacity: int = Field(description="Total inventory/capacity")
-    sold: int = Field(default=0, description="Number of tickets sold")
-    revenue: float = Field(default=0.0, description="Total revenue (sold × price)")
-    status: str = Field(description="Ticket status (active, sold_out, hidden)")
+    """Simplified ticket schema for list views (table display)."""
+    shopify_variant_id: str
+    ticket_name: str
+    ticket_type: TicketType
+    price: float
+    capacity: int
+    sold: int
+    revenue: float
+    is_visible: bool = Field(default=True, description="Whether ticket is visible to customers")
+    status: str  # "active", "sold_out", "hidden"
     
     class Config:
         json_schema_extra = {
             "example": {
-                "shopify_variant_id": "45970052186283",
+                "shopify_variant_id": "45970216779947",
                 "ticket_name": "Early Bird",
                 "ticket_type": "early_bird",
                 "price": 100.00,
                 "capacity": 200,
-                "sold": 155,
-                "revenue": 15500.00,
+                "sold": 50,
+                "revenue": 5000.00,
+                "is_visible": True,
                 "status": "active"
             }
         }

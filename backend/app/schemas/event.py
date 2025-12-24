@@ -142,8 +142,17 @@ class ShababcoEvent(BaseModel):
         }
 
 
+class PaginationInfo(BaseModel):
+    """Pagination metadata."""
+    current_page: int = Field(description="Current page number (1-indexed)")
+    total_pages: int = Field(description="Total number of pages")
+    total_count: int = Field(description="Total number of events")
+    per_page: int = Field(description="Number of events per page")
+    has_next: bool = Field(description="Whether there is a next page")
+    has_previous: bool = Field(description="Whether there is a previous page")
+
+
 class EventListResponse(BaseModel):
-    """Response schema for listing events."""
+    """Response schema for listing events with offset-based pagination."""
     events: list[ShababcoEvent] = Field(default_factory=list, description="List of events")
-    has_next_page: bool = Field(default=False, description="Whether there are more pages")
-    end_cursor: Optional[str] = Field(None, description="Cursor for next page")
+    pagination: PaginationInfo = Field(description="Pagination metadata")
