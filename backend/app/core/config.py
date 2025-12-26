@@ -111,6 +111,11 @@ class Settings(BaseSettings):
         if not self.SHOPIFY_STORE_DOMAIN:
             return ""
         return f"https://{self.SHOPIFY_STORE_DOMAIN}/admin/api/{self.SHOPIFY_API_VERSION}/graphql.json"
+    
+    # Google OAuth Configuration
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/attendees/auth/google/callback"
 
     def _check_default_secret(self, var_name: str, value: str | None) -> None:
         if value == "changethis":
@@ -135,3 +140,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()  # type: ignore
+

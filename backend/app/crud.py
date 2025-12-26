@@ -4,7 +4,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.core.security import get_password_hash, verify_password
-from app.models import Item, ItemCreate, User, UserCreate, UserUpdate
+from app.models import Item, ItemCreate, User, UserCreate, UserUpdate, Attendee, AttendeeSignup
 
 
 def create_user(*, session: Session, user_create: UserCreate) -> User:
@@ -52,3 +52,71 @@ def create_item(*, session: Session, item_in: ItemCreate, owner_id: uuid.UUID) -
     session.commit()
     session.refresh(db_item)
     return db_item
+
+
+# ============================================================================
+# ATTENDEE CRUD FUNCTIONS
+# ============================================================================
+
+def create_attendee(*, session: Session, attendee_create: AttendeeSignup) -> Attendee:
+    """Create a new attendee account"""
+    db_obj = Attendee.model_validate(
+        attendee_create, 
+        update={"hashed_password": get_password_hash(attendee_create.password)}
+    )
+    session.add(db_obj)
+    session.commit()
+    session.refresh(db_obj)
+    return db_obj
+
+
+def get_attendee_by_email(*, session: Session, email: str) -> Attendee | None:
+    """Get attendee by email"""
+    statement = select(Attendee).where(Attendee.email == email)
+    attendee = session.exec(statement).first()
+    return attendee
+
+
+def authenticate_attendee(*, session: Session, email: str, password: str) -> Attendee | None:
+    """Authenticate attendee with email and password"""
+    db_attendee = get_attendee_by_email(session=session, email=email)
+    if not db_attendee:
+        return None
+    if not db_attendee.hashed_password:
+        # OAuth user without password
+        return None
+    if not verify_password(password, db_attendee.hashed_password):
+        return None
+    if not db_attendee.is_active:
+        return None
+    return db_attendee
+
+
+def get_attendee_by_google_id(*, session: Session, google_id: str) -> Attendee | None:
+    """Get attendee by Google ID"""
+    statement = select(Attendee).where(Attendee.google_id == google_id)
+    attendee = session.exec(statement).first()
+    return attendee
+
+
+def create_attendee_from_google(
+    *,
+    session: Session,
+    email: str,
+    google_id: str,
+    first_name: str | None,
+    last_name: str | None
+) -> Attendee:
+    """Create attendee from Google OAuth"""
+    db_obj = Attendee(
+        email=email,
+        google_id=google_id,
+        first_name=first_name,
+        last_name=last_name,
+        hashed_password=None  # No password for OAuth users
+    )
+    session.add(db_obj)
+    session.commit()
+    session.refresh(db_obj)
+    return db_obj
+

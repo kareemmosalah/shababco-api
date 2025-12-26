@@ -11,7 +11,7 @@ from sqlmodel import Session
 from app.core import security
 from app.core.config import settings
 from app.core.db import engine
-from app.models import TokenPayload, User
+from app.models import TokenPayload, User, Attendee
 
 reusable_oauth2 = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/login/access-token"
@@ -55,3 +55,26 @@ def get_current_active_superuser(current_user: CurrentUser) -> User:
             status_code=403, detail="The user doesn't have enough privileges"
         )
     return current_user
+
+
+def get_current_attendee(session: SessionDep, token: TokenDep) -> Attendee:
+    """Get current authenticated attendee from JWT token"""
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+        )
+        token_data = TokenPayload(**payload)
+    except (InvalidTokenError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Could not validate credentials",
+        )
+    attendee = session.get(Attendee, token_data.sub)
+    if not attendee:
+        raise HTTPException(status_code=404, detail="Attendee not found")
+    if not attendee.is_active:
+        raise HTTPException(status_code=400, detail="Inactive attendee")
+    return attendee
+
+
+CurrentAttendee = Annotated[Attendee, Depends(get_current_attendee)]
