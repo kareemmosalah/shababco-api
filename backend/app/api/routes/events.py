@@ -43,6 +43,109 @@ async def get_event_metadata():
         ]
     }
 
+
+@router.get("/popular", response_model=list[ShababcoEvent])
+async def get_popular_events(
+    limit: int = Query(default=10, ge=1, le=50, description="Number of popular events to return")
+):
+    """
+    Get most popular events based on tickets sold.
+    
+    Returns top events sorted by total tickets sold (descending).
+    Public endpoint - no authentication required.
+    
+    Sold calculation: capacity (from metafield) - current inventory
+    
+    - **limit**: Number of events to return (default: 10, max: 50)
+    """
+    from app.integrations.shopify.variants import list_variants
+    
+    try:
+        # Check cache first
+        cache_key = f"events:popular:limit={limit}"
+        cached_response = cache_get(cache_key)
+        if cached_response:
+            logger.info(f"✅ Cache HIT for popular events")
+            return cached_response
+        
+        logger.info(f"⚠️ Cache MISS for popular events - fetching from Shopify")
+        
+        # Fetch all active events
+        all_events = []
+        cursor = None
+        
+        while True:
+            result = await list_products(limit=50, query="product_type:event AND status:active", cursor=cursor)
+            all_events.extend(result["products"])
+            
+            if not result.get("has_next_page", False):
+                break
+            
+            cursor = result.get("end_cursor")
+            
+            # Safety limit
+            if len(all_events) >= 500:
+                break
+        
+        # Calculate sold tickets for each event
+        events_with_sales = []
+        
+        for event in all_events:
+            product_id = event.get("shopify_product_id")
+            
+            try:
+                # Get variants (tickets) for this event
+                variants = await list_variants(product_id)
+                
+                # Calculate total sold tickets using the correct formula:
+                # sold = capacity (from metafield) - available (current inventory)
+                # This matches the tickets endpoint calculation
+                total_sold = 0
+                for variant in variants:
+                    # Get capacity from metafield
+                    capacity = variant.get("capacity", 0)
+                    available = variant.get("available", 0)
+                    
+                    # Calculate sold: capacity - available
+                    sold = max(0, capacity - available)
+                    total_sold += sold
+                
+                # Add sold count to event
+                event["total_sold"] = total_sold
+                events_with_sales.append(event)
+                
+            except Exception as e:
+                logger.warning(f"Failed to get sales for event {product_id}: {str(e)}")
+                # Include event with 0 sales if we can't fetch variants
+                event["total_sold"] = 0
+                events_with_sales.append(event)
+        
+        # Sort by total sold (descending)
+        events_with_sales.sort(key=lambda e: e.get("total_sold", 0), reverse=True)
+        
+        # Get top N events
+        popular_events = events_with_sales[:limit]
+        
+        # Cache for 10 minutes
+        cache_set(cache_key, popular_events, ttl=600)
+        logger.info(f"💾 Cached popular events for 10 minutes")
+        
+        return popular_events
+        
+    except ShopifyAPIError as e:
+        logger.error(f"Shopify API error while fetching popular events: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to fetch popular events: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error while fetching popular events: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
+
+
 @router.get("", response_model=EventListResponse)
 async def get_events(
     current_user: CurrentUser,
@@ -50,7 +153,8 @@ async def get_events(
     limit: int = Query(default=20, ge=1, le=50, description="Number of events per page"),
     search: Optional[str] = Query(default=None, description="Search events by title, subtitle, description, and tags"),
     category: Optional[str] = Query(default=None, description="Filter by category"),
-    status: Optional[str] = Query(default=None, description="Filter by status (active, draft, archived)")
+    status: Optional[str] = Query(default=None, description="Filter by status (active, draft, archived)"),
+    featured: Optional[bool] = Query(default=None, description="Filter by featured status (true for featured only)")
 ):
     """
     List events with offset-based pagination, search, and filters.
@@ -65,7 +169,7 @@ async def get_events(
     """
     try:
         # Generate cache key based on query parameters
-        cache_key = f"events:list:page={page}:limit={limit}:search={search}:category={category}:status={status}"
+        cache_key = f"events:list:page={page}:limit={limit}:search={search}:category={category}:status={status}:featured={featured}"
         
         # Try to get from cache first
         cached_response = cache_get(cache_key)
@@ -111,6 +215,10 @@ async def get_events(
             if category:
                 batch_events = [e for e in batch_events if e.get("category") == category]
             
+            # Filter by featured if specified
+            if featured is not None:
+                batch_events = [e for e in batch_events if e.get("is_featured") == featured]
+            
             all_events.extend(batch_events)
             
             # Check if there are more pages
@@ -122,6 +230,9 @@ async def get_events(
             # Safety limit: max 500 events
             if len(all_events) >= 500:
                 break
+        
+        # Sort events: featured first, then by date
+        all_events.sort(key=lambda e: (not e.get("is_featured", False), e.get("start_datetime") or ""))
         
         # Calculate pagination
         total_count = len(all_events)
@@ -553,6 +664,84 @@ async def publish_event(
         )
     except Exception as e:
         logger.error(f"Unexpected error while publishing event: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
+
+
+@router.patch(
+    "/{product_id}/featured",
+    response_model=ShababcoEvent,
+    dependencies=[Depends(get_current_active_superuser)],
+)
+async def toggle_featured(
+    product_id: str,
+    is_featured: bool = Query(..., description="Set event as featured")
+) -> ShababcoEvent:
+    """
+    Toggle featured status for an event.
+    
+    Featured events appear in the hero carousel on the homepage.
+    
+    **Validation:**
+    - Event must be published (status=active) to be featured
+    - Cannot feature draft or archived events
+    
+    - **product_id**: Shopify product ID
+    - **is_featured**: True to feature the event, False to unfeature
+    """
+    from app.integrations.shopify.featured import update_is_featured
+    
+    try:
+        # 1. Validate event exists
+        try:
+            event = await fetch_product(product_id)
+        except ShopifyNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Event with ID {product_id} not found"
+            )
+        
+        # 2. Validate event is published before featuring
+        if is_featured:
+            event_status = event.get("status", "").lower()
+            if event_status != "active":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot feature unpublished event. Event status is '{event_status}'. "
+                           f"Please publish the event first before featuring it."
+                )
+        
+        # 3. Update is_featured metafield
+        try:
+            await update_is_featured(product_id, is_featured)
+        except ShopifyAPIError as e:
+            logger.error(f"Failed to update is_featured: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update featured status: {str(e)}"
+            )
+        
+        # 4. Fetch and return updated event
+        updated_event = await fetch_product(product_id)
+        logger.info(f"Successfully set is_featured={is_featured} for event {product_id}")
+        
+        # Invalidate events list cache
+        invalidate_event_caches()
+        
+        return ShababcoEvent(**updated_event)
+        
+    except HTTPException:
+        raise
+    except ShopifyAPIError as e:
+        logger.error(f"Shopify API error while updating featured status: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update featured status: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error while updating featured status: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred"

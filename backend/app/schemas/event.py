@@ -115,6 +115,12 @@ class ShababcoEvent(BaseModel):
     status: Literal["active", "draft", "archived", "unlisted"] = Field(..., description="Event status")
     total_tickets: int = Field(..., description="Total available tickets")
     
+    # Featured
+    is_featured: bool = Field(default=False, description="Whether event is featured in hero carousel")
+    
+    # Popularity (optional, only included in popular endpoint)
+    total_sold: int | None = Field(default=None, description="Total tickets sold (capacity - available)")
+    
     class Config:
         json_schema_extra = {
             "example": {
@@ -137,7 +143,9 @@ class ShababcoEvent(BaseModel):
                 "organizer_name": "Shababco Events",
                 "seo_slug": "cairo-youth-culture-festival-2025",
                 "status": "active",
-                "total_tickets": 100
+                "total_tickets": 100,
+                "is_featured": False,
+                "total_sold": 25
             }
         }
 

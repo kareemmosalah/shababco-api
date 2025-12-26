@@ -41,6 +41,15 @@ query getProduct($id: ID!) {
         }
       }
     }
+    customMetafields: metafields(first: 5, namespace: "custom") {
+      edges {
+        node {
+          key
+          value
+          type
+        }
+      }
+    }
   }
 }
 """
@@ -68,6 +77,15 @@ query listProducts($first: Int!, $query: String, $after: String) {
           }
         }
         metafields(first: 20, namespace: "event") {
+          edges {
+            node {
+              key
+              value
+              type
+            }
+          }
+        }
+        customMetafields: metafields(first: 5, namespace: "custom") {
           edges {
             node {
               key
@@ -109,6 +127,15 @@ mutation createProduct($input: ProductInput!) {
         }
       }
       metafields(first: 20, namespace: "event") {
+        edges {
+          node {
+            key
+            value
+            type
+          }
+        }
+      }
+      customMetafields: metafields(first: 5, namespace: "custom") {
         edges {
           node {
             key
@@ -162,6 +189,7 @@ def _format_product_response(product_data: Dict[str, Any]) -> Dict[str, Any]:
         return None
     
     metafields = _parse_metafields(product_data.get("metafields", {}))
+    custom_metafields = _parse_metafields(product_data.get("customMetafields", {}))
     
     # Parse images from metafields (since we store them there during creation)
     # In the future, we can also check product.images if we add media separately
@@ -176,6 +204,10 @@ def _format_product_response(product_data: Dict[str, Any]) -> Dict[str, Any]:
             gallery_images = json.loads(gallery_images_json)
         except (json.JSONDecodeError, TypeError):
             gallery_images = None
+    
+    # Parse is_featured from custom metafields
+    is_featured_value = custom_metafields.get("is_featured", "false")
+    is_featured = is_featured_value.lower() == "true" if isinstance(is_featured_value, str) else bool(is_featured_value)
     
     return {
         "shopify_product_id": product_data.get("legacyResourceId"),
@@ -203,6 +235,8 @@ def _format_product_response(product_data: Dict[str, Any]) -> Dict[str, Any]:
         # Status & Inventory
         "status": product_data.get("status", "").lower(),
         "total_tickets": product_data.get("totalInventory", 0),
+        # Featured flag
+        "is_featured": is_featured,
     }
 
 
