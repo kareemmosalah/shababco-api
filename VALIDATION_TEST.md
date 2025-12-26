@@ -131,7 +131,7 @@ Your backend terminal should show:
 ```
 INFO:     ⚠️ Cache MISS for event list - fetching from Shopify
 INFO:     💾 Cached events page: 1 (20 events, 300s TTL)
-INFO:     ✅ Cache HIT for event 8613376950443
+\\\\\INFO:     ✅ Cache HIT for event 8613376950443
 INFO:     ✅ Cache HIT for tickets of event 8613376950443
 ```
 
