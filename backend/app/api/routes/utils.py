@@ -27,5 +27,21 @@ def test_email(email_to: EmailStr) -> Message:
 
 
 @router.get("/health-check/")
-async def health_check() -> bool:
-    return True
+async def health_check() -> dict:
+    """
+    Health check endpoint for container orchestration.
+    Returns service status and connectivity checks.
+    """
+    from app.core.config import settings
+    from app.core.cache import REDIS_AVAILABLE
+    
+    health_status = {
+        "status": "healthy",
+        "services": {
+            "api": "up",
+            "database": "unknown",  # Could add DB ping check
+            "redis": "up" if REDIS_AVAILABLE else "degraded",
+        }
+    }
+    
+    return health_status

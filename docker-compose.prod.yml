@@ -1,0 +1,68 @@
+services:
+  # ================================
+  # Redis Cache (Production)
+  # ================================
+  redis:
+    # Don't expose port in production (internal only)
+    ports: []
+    restart: always
+    # Enable persistence
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD required in production}
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+  # ================================
+  # Backend API (Production)
+  # ================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: application # Production stage (no dev tools)
+    image: shababco-backend:${TAG:-latest}
+    restart: always
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes: [] # No volume mounts in production
+    environment:
+      # Production overrides
+      - ENVIRONMENT=production
+      - WORKERS=${WORKERS:-4}
+    # Production command with gunicorn
+    command: >
+      /bin/bash -c "
+      /app/scripts/prestart.sh &&
+      exec gunicorn app.main:app
+        --workers ${WORKERS:-4}
+        --worker-class uvicorn.workers.UvicornWorker
+        --bind 0.0.0.0:8000
+        --timeout 120
+        --graceful-timeout 30
+        --keep-alive 5
+        --max-requests 1000
+        --max-requests-jitter 100
+        --access-logfile -
+        --error-logfile -
+        --log-level info
+      "
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "1"
+          memory: 1G
+    # Production health check (more frequent)
+    healthcheck:
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
